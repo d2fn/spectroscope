@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"time"
@@ -19,7 +20,7 @@ import (
 func main() {
 	ss := spectro.New(
 		time.Second,                // precision: 1s buckets
-		3600,                       // history: 1h of buckets
+		600,                       // history: 1h of buckets
 		[]string{"host"},           // dimensions
 		[]string{"latency_ms"},     // measures
 	)
@@ -27,7 +28,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go ss.Start(ctx)
-	go emitLoop(ss)
+	go emitWave(ss, "a", 150, 10, 3, 180*time.Second)
+	go emitWave(ss, "b", 10, 5, 1.5, 30*time.Second)
+	go emitNoise(ss, "noise", 0, 200)
 
 	mux := http.NewServeMux()
 	mux.Handle("/spectrogram/", http.StripPrefix("/spectrogram", ss.Handler()))
@@ -39,12 +42,27 @@ func main() {
 	}
 }
 
-func emitLoop(ss *spectro.SpectroServer) {
+func emitNoise(ss *spectro.SpectroServer, host string, lo, hi float64) {
 	for {
 		_ = ss.Emit(spectro.Observation{
 			Time:       time.Now(),
-			Dimensions: map[string]string{"host": "adf"},
-			Measures:   map[string]float64{"latency_ms": rand.Float64() * 200},
+			Dimensions: map[string]string{"host": host},
+			Measures:   map[string]float64{"latency_ms": lo + rand.Float64()*(hi-lo)},
+		})
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func emitWave(ss *spectro.SpectroServer, host string, mean, amp, jitter float64, period time.Duration) {
+	start := time.Now()
+	for {
+		now := time.Now()
+		phase := 2 * math.Pi * float64(now.Sub(start)) / float64(period)
+		v := mean + amp*math.Sin(phase) + rand.NormFloat64()*jitter
+		_ = ss.Emit(spectro.Observation{
+			Time:       now,
+			Dimensions: map[string]string{"host": host},
+			Measures:   map[string]float64{"latency_ms": v},
 		})
 		time.Sleep(10 * time.Millisecond)
 	}

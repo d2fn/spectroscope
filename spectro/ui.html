@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>spectro</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0a0a0a;
+  --fg: #d8d8d8;
+  --muted: #777;
+  --line: #2a2a2a;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin: 0;
+  padding: 20px;
+}
+.controls {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+input, select, button {
+  background: #111;
+  color: var(--fg);
+  border: 1px solid #333;
+  padding: 6px 9px;
+  font: inherit;
+  border-radius: 3px;
+}
+input:focus, select:focus, button:focus {
+  outline: 1px solid #555;
+  border-color: #555;
+}
+button { cursor: pointer; }
+button:hover { background: #1a1a1a; }
+.label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.status { color: var(--muted); font-size: 11px; margin-left: auto; }
+canvas { display: block; background: #000; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="controls">
+  <span class="label">metric</span>
+  <select id="metric"></select>
+  <span class="label">y-bins</span>
+  <input id="ybins" value="40" style="width: 56px" />
+  <button id="refresh">refresh</button>
+  <label class="label"><input type="checkbox" id="auto" checked> auto-refresh (1s)</label>
+  <label class="label"><input type="checkbox" id="smooth"> smooth</label>
+  <span class="status" id="status"></span>
+</div>
+<canvas id="canvas" width="960" height="520"></canvas>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const metricEl = document.getElementById('metric');
+const ybinsEl = document.getElementById('ybins');
+const refreshBtn = document.getElementById('refresh');
+const autoEl = document.getElementById('auto');
+const smoothEl = document.getElementById('smooth');
+const statusEl = document.getElementById('status');
+
+// Approximation of the classic spectrogram palette:
+// black -> dark blue -> cyan -> green -> yellow -> red/orange.
+const stops = [
+  [0.00, [  0,   0,   0]],
+  [0.16, [ 12,  28,  96]],
+  [0.34, [  8, 132, 168]],
+  [0.55, [ 84, 192,  72]],
+  [0.78, [228, 208,  32]],
+  [1.00, [232,  72,  32]],
+];
+
+function colorFor(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < stops.length; i++) {
+    if (t <= stops[i][0]) {
+      const [t0, c0] = stops[i-1];
+      const [t1, c1] = stops[i];
+      const f = (t - t0) / (t1 - t0);
+      return [
+        (c0[0] + (c1[0] - c0[0]) * f) | 0,
+        (c0[1] + (c1[1] - c0[1]) * f) | 0,
+        (c0[2] + (c1[2] - c0[2]) * f) | 0,
+      ];
+    }
+  }
+  return stops[stops.length-1][1];
+}
+
+const MARGIN = { left: 72, right: 16, top: 16, bottom: 56 };
+const ZERO_TIME = '0001-01-01T00:00:00Z';
+
+function fmtTime(d) {
+  return d.toLocaleTimeString([], { hour12: false });
+}
+
+function fmtNumber(n) {
+  if (n === 0) return '0';
+  const a = Math.abs(n);
+  if (a >= 1000) return n.toFixed(0);
+  if (a >= 10) return n.toFixed(1);
+  return n.toFixed(2);
+}
+
+async function loadMetrics() {
+  try {
+    const resp = await fetch('_metrics');
+    if (!resp.ok) {
+      statusEl.textContent = `metrics: ${resp.status} ${resp.statusText}`;
+      return;
+    }
+    const body = await resp.json();
+    const metrics = body.metrics || [];
+    metricEl.innerHTML = '';
+    for (const m of metrics) {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      metricEl.appendChild(opt);
+    }
+    if (metrics.length === 0) {
+      statusEl.textContent = 'no metrics configured';
+    }
+  } catch (e) {
+    statusEl.textContent = 'metrics error: ' + e.message;
+  }
+}
+
+async function fetchAndRender() {
+  const metric = metricEl.value;
+  if (!metric) return;
+  const yBins = parseInt(ybinsEl.value, 10) || 20;
+  try {
+    const resp = await fetch(`${encodeURIComponent(metric)}?yBins=${yBins}`);
+    if (!resp.ok) {
+      statusEl.textContent = `${resp.status} ${resp.statusText}`;
+      return;
+    }
+    const body = await resp.json();
+    render(body.spectrogram);
+    statusEl.textContent = `${new Date().toLocaleTimeString([], {hour12: false})} · ${body.spectrogram.XBins}×${body.spectrogram.YBins}`;
+  } catch (e) {
+    statusEl.textContent = 'error: ' + e.message;
+  }
+}
+
+function render(s) {
+  const W = canvas.width, H = canvas.height;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const plotW = W - MARGIN.left - MARGIN.right;
+  const plotH = H - MARGIN.top - MARGIN.bottom;
+
+  if (!s || !s.XBins || !s.YBins) {
+    drawFrame(plotW, plotH);
+    ctx.fillStyle = '#666';
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('no data', MARGIN.left + plotW/2, MARGIN.top + plotH/2);
+    return;
+  }
+
+  let maxCount = 0;
+  for (let x = 0; x < s.XBins; x++) {
+    for (let y = 0; y < s.YBins; y++) {
+      const v = s.Cells[x][y];
+      if (v > maxCount) maxCount = v;
+    }
+  }
+  if (maxCount === 0) maxCount = 1;
+
+  // Render to a small offscreen image then blit into the plot region.
+  const img = ctx.createImageData(s.XBins, s.YBins);
+  for (let x = 0; x < s.XBins; x++) {
+    for (let y = 0; y < s.YBins; y++) {
+      const t = s.Cells[x][y] / maxCount;
+      const [r, g, b] = colorFor(t);
+      const yi = s.YBins - 1 - y; // flip: low y at bottom
+      const idx = (yi * s.XBins + x) * 4;
+      img.data[idx]     = r;
+      img.data[idx + 1] = g;
+      img.data[idx + 2] = b;
+      img.data[idx + 3] = 255;
+    }
+  }
+  const tmp = document.createElement('canvas');
+  tmp.width = s.XBins;
+  tmp.height = s.YBins;
+  tmp.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = smoothEl.checked;
+  ctx.drawImage(tmp, MARGIN.left, MARGIN.top, plotW, plotH);
+
+  drawFrame(plotW, plotH);
+  drawYAxis(s, plotH);
+  drawXAxis(s, plotW, plotH);
+}
+
+function drawFrame(plotW, plotH) {
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(MARGIN.left + 0.5, MARGIN.top + 0.5, plotW, plotH);
+}
+
+function drawYAxis(s, plotH) {
+  ctx.fillStyle = '#bbb';
+  ctx.strokeStyle = '#444';
+  ctx.font = '11px ui-monospace, monospace';
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) {
+    const frac = i / ticks;
+    const v = s.YMin + (s.YMax - s.YMin) * frac;
+    const py = MARGIN.top + plotH - frac * plotH;
+    ctx.beginPath();
+    ctx.moveTo(MARGIN.left - 4, py + 0.5);
+    ctx.lineTo(MARGIN.left, py + 0.5);
+    ctx.stroke();
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(fmtNumber(v), MARGIN.left - 6, py);
+  }
+  // axis title
+  ctx.save();
+  ctx.translate(16, MARGIN.top + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#888';
+  ctx.fillText(metricEl.value, 0, 0);
+  ctx.restore();
+}
+
+function drawXAxis(s, plotW, plotH) {
+  const yBase = MARGIN.top + plotH;
+  if (!s.From || s.From === ZERO_TIME || !s.To || s.To === ZERO_TIME) return;
+
+  const from = new Date(s.From);
+  const to = new Date(s.To);
+  if (isNaN(from) || isNaN(to)) return;
+
+  ctx.strokeStyle = '#444';
+  ctx.fillStyle = '#bbb';
+  ctx.font = '11px ui-monospace, monospace';
+
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) {
+    const frac = i / ticks;
+    const px = MARGIN.left + frac * plotW;
+    const t = new Date(from.getTime() + (to.getTime() - from.getTime()) * frac);
+    ctx.beginPath();
+    ctx.moveTo(px + 0.5, yBase);
+    ctx.lineTo(px + 0.5, yBase + 4);
+    ctx.stroke();
+    ctx.textAlign = i === 0 ? 'left' : (i === ticks ? 'right' : 'center');
+    ctx.textBaseline = 'top';
+    ctx.fillText(fmtTime(t), px, yBase + 8);
+  }
+
+  const spanMs = to.getTime() - from.getTime();
+  const spanLabel = spanMs >= 60000
+    ? `${(spanMs / 60000).toFixed(1)}m`
+    : `${(spanMs / 1000).toFixed(1)}s`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#888';
+  ctx.fillText(`time  ·  Δ ${spanLabel}`, MARGIN.left + plotW / 2, yBase + 28);
+}
+
+refreshBtn.addEventListener('click', fetchAndRender);
+metricEl.addEventListener('change', fetchAndRender);
+ybinsEl.addEventListener('change', fetchAndRender);
+smoothEl.addEventListener('change', fetchAndRender);
+
+let autoTimer = null;
+function scheduleAuto() {
+  if (autoTimer) clearInterval(autoTimer);
+  if (autoEl.checked) autoTimer = setInterval(fetchAndRender, 1000);
+}
+autoEl.addEventListener('change', scheduleAuto);
+
+(async () => {
+  await loadMetrics();
+  fetchAndRender();
+  scheduleAuto();
+})();
+</script>
+</body>
+</html>
