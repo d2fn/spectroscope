@@ -70,26 +70,46 @@ func (ss *SpectroServer) Emit(obs Observation) error {
 	return nil
 }
 
-func (ss *SpectroServer) Query(query SpectrogramQuery) (*Spectrogram, error) {
+func (ss *SpectroServer) Query(query SpectrogramQuery) ([]SpectrogramGroup, error) {
 	if query.Measure == "" {
 		return nil, fmt.Errorf("Measure is required")
 	}
 	yBins := query.YBins
 	if yBins <= 0 {
-		// 20 is a sensitlbe default i guess
 		yBins = 20
 	}
 
-	// yeah go ahead and aggregate
-	tbl, tableMax, found := ss.db.aggregate(query.Measure)
-	
-	bucketDur := time.Duration(tbl.alignment.blocksize) * time.Millisecond
-	if !found {
-		return &Spectrogram{YBins: yBins, BucketDur: bucketDur}, nil
+	if query.GroupBy == "" {
+		tbl, tableMax, _ := ss.db.aggregate(query.Measure)
+		spec := buildSpectrogram(tbl, tableMax, yBins)
+		return []SpectrogramGroup{{Label: "all", Spectrogram: *spec}}, nil
 	}
 
-	// The ring buffer holds rows in arbitrary slot order; reorder by block
-	// time so the x-axis runs oldest → newest.
+	if _, ok := ss.dimensions.positions[query.GroupBy]; !ok {
+		return nil, fmt.Errorf("unknown dimension %q", query.GroupBy)
+	}
+	tables, tableMax, _ := ss.db.aggregateBy(query.Measure, query.GroupBy)
+
+	labels := make([]string, 0, len(tables))
+	for k := range tables {
+		labels = append(labels, k)
+	}
+	sort.Strings(labels)
+
+	out := make([]SpectrogramGroup, 0, len(labels))
+	for _, label := range labels {
+		spec := buildSpectrogram(tables[label], tableMax, yBins)
+		out = append(out, SpectrogramGroup{
+			Label:       query.GroupBy + "=" + label,
+			Spectrogram: *spec,
+		})
+	}
+	return out, nil
+}
+
+func buildSpectrogram(tbl *table, tableMax float64, yBins int) *Spectrogram {
+	bucketDur := time.Duration(tbl.alignment.blocksize) * time.Millisecond
+
 	populated := make([]*row, 0, len(tbl.rows))
 	for i := range tbl.rows {
 		r := &tbl.rows[i]
@@ -137,7 +157,7 @@ func (ss *SpectroServer) Query(query SpectrogramQuery) (*Spectrogram, error) {
 		YMin:      yMin,
 		YMax:      yMax,
 		Cells:     cells,
-	}, nil
+	}
 }
 
 // a monotonic clock
@@ -160,14 +180,21 @@ func (c *clock) emit(ts time.Time) (time.Time, error) {
 	return poll, nil
 }
 
-// HeatmapQuery parameterizes a Heatmap call.
 type SpectrogramQuery struct {
-	Measure    string
-	YBins      int
+	Measure string
+	YBins   int
+	// GroupBy is the name of a dimension to split on. Empty means a single
+	// aggregate across all dimension values.
+	GroupBy string
+}
+
+type SpectrogramGroup struct {
+	Label       string      `json:"label"`
+	Spectrogram Spectrogram `json:"spectrogram"`
 }
 
 type SpectrogramReply struct {
-	Spectrogram Spectrogram `json:"spectrogram"`
+	Groups []SpectrogramGroup `json:"groups"`
 }
 
 // Heatmap is a 2D histogram: Cells[xIdx][yIdx] is the count of observations

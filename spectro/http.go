@@ -34,8 +34,12 @@ func (ss *SpectroServer) handleUI(w http.ResponseWriter, _ *http.Request) {
 func (ss *SpectroServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
-		Metrics []string `json:"metrics"`
-	}{Metrics: ss.measures.names})
+		Metrics    []string `json:"metrics"`
+		Dimensions []string `json:"dimensions"`
+	}{
+		Metrics:    ss.measures.names,
+		Dimensions: ss.dimensions.names,
+	})
 }
 
 func (ss *SpectroServer) handleSpectrogram(w http.ResponseWriter, r *http.Request) {
@@ -46,13 +50,14 @@ func (ss *SpectroServer) handleSpectrogram(w http.ResponseWriter, r *http.Reques
 			yBins = n
 		}
 	}
+	groupBy := r.URL.Query().Get("groupBy")
 
-	spec, err := ss.Query(SpectrogramQuery{Measure: metric, YBins: yBins})
+	groups, err := ss.Query(SpectrogramQuery{Measure: metric, YBins: yBins, GroupBy: groupBy})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(SpectrogramReply{Spectrogram: *spec})
+	_ = json.NewEncoder(w).Encode(SpectrogramReply{Groups: groups})
 }

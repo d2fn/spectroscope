@@ -11,12 +11,16 @@
   --muted: #777;
   --line: #2a2a2a;
 }
+html, body { height: 100%; }
 body {
   background: var(--bg);
   color: var(--fg);
   font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   margin: 0;
   padding: 20px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
 .controls {
   display: flex;
@@ -41,13 +45,40 @@ button { cursor: pointer; }
 button:hover { background: #1a1a1a; }
 .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
 .status { color: var(--muted); font-size: 11px; margin-left: auto; }
-canvas { display: block; background: #000; border: 1px solid var(--line); }
+#grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+}
+.cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.cell-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  font-family: ui-monospace, monospace;
+}
+.cell canvas {
+  display: block;
+  background: #000;
+  border: 1px solid var(--line);
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
 </style>
 </head>
 <body>
 <div class="controls">
   <span class="label">metric</span>
   <select id="metric"></select>
+  <span class="label">group by</span>
+  <select id="groupBy"><option value="">none</option></select>
   <span class="label">y-bins</span>
   <input id="ybins" value="40" style="width: 56px" />
   <button id="refresh">refresh</button>
@@ -55,17 +86,20 @@ canvas { display: block; background: #000; border: 1px solid var(--line); }
   <label class="label"><input type="checkbox" id="smooth"> smooth</label>
   <span class="status" id="status"></span>
 </div>
-<canvas id="canvas" width="960" height="520"></canvas>
+<div id="grid"></div>
 
 <script>
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+const gridEl = document.getElementById('grid');
 const metricEl = document.getElementById('metric');
+const groupByEl = document.getElementById('groupBy');
 const ybinsEl = document.getElementById('ybins');
 const refreshBtn = document.getElementById('refresh');
 const autoEl = document.getElementById('auto');
 const smoothEl = document.getElementById('smooth');
 const statusEl = document.getElementById('status');
+
+const cells = []; // [{label, canvas, ctx}]
+let lastGroups = []; // [{label, spectrogram}]
 
 // Approximation of the classic spectrogram palette:
 // black -> dark blue -> cyan -> green -> yellow -> red/orange.
@@ -126,6 +160,14 @@ async function loadMetrics() {
       opt.textContent = m;
       metricEl.appendChild(opt);
     }
+    const dims = body.dimensions || [];
+    groupByEl.innerHTML = '<option value="">none</option>';
+    for (const d of dims) {
+      const opt = document.createElement('option');
+      opt.value = d;
+      opt.textContent = d;
+      groupByEl.appendChild(opt);
+    }
     if (metrics.length === 0) {
       statusEl.textContent = 'no metrics configured';
     }
@@ -134,26 +176,79 @@ async function loadMetrics() {
   }
 }
 
+function syncGrid() {
+  const newLabels = lastGroups.map(g => g.label);
+  const oldLabels = cells.map(c => c.label);
+  const same =
+    newLabels.length === oldLabels.length &&
+    newLabels.every((l, i) => l === oldLabels[i]);
+  if (same && cells.length > 0) return;
+
+  gridEl.innerHTML = '';
+  cells.length = 0;
+  const n = lastGroups.length;
+  const cols = n > 1 ? Math.ceil(Math.sqrt(n)) : 1;
+  gridEl.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+
+  const showLabel = !!groupByEl.value;
+  for (const g of lastGroups) {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    const labelEl = document.createElement('div');
+    labelEl.className = 'cell-label';
+    labelEl.textContent = g.label;
+    if (!showLabel) labelEl.style.display = 'none';
+    const canvas = document.createElement('canvas');
+    cell.appendChild(labelEl);
+    cell.appendChild(canvas);
+    gridEl.appendChild(cell);
+    cells.push({label: g.label, canvas, ctx: canvas.getContext('2d')});
+  }
+  resizeAllCanvases();
+}
+
+function resizeAllCanvases() {
+  const dpr = window.devicePixelRatio || 1;
+  for (const c of cells) {
+    const cssW = c.canvas.clientWidth;
+    const cssH = c.canvas.clientHeight;
+    c.canvas.width = Math.max(1, Math.floor(cssW * dpr));
+    c.canvas.height = Math.max(1, Math.floor(cssH * dpr));
+    c.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+}
+
 async function fetchAndRender() {
   const metric = metricEl.value;
   if (!metric) return;
   const yBins = parseInt(ybinsEl.value, 10) || 20;
+  const groupBy = groupByEl.value;
+  const q = new URLSearchParams({yBins});
+  if (groupBy) q.set('groupBy', groupBy);
   try {
-    const resp = await fetch(`${encodeURIComponent(metric)}?yBins=${yBins}`);
+    const resp = await fetch(`${encodeURIComponent(metric)}?${q}`);
     if (!resp.ok) {
       statusEl.textContent = `${resp.status} ${resp.statusText}`;
       return;
     }
     const body = await resp.json();
-    render(body.spectrogram);
-    statusEl.textContent = `${new Date().toLocaleTimeString([], {hour12: false})} · ${body.spectrogram.XBins}×${body.spectrogram.YBins}`;
+    lastGroups = body.groups || [];
+    syncGrid();
+    renderAll();
+    statusEl.textContent = `${new Date().toLocaleTimeString([], {hour12: false})} · ${lastGroups.length} group${lastGroups.length === 1 ? '' : 's'}`;
   } catch (e) {
     statusEl.textContent = 'error: ' + e.message;
   }
 }
 
-function render(s) {
-  const W = canvas.width, H = canvas.height;
+function renderAll() {
+  for (let i = 0; i < cells.length; i++) {
+    renderInto(cells[i].ctx, cells[i].canvas, lastGroups[i].spectrogram);
+  }
+}
+
+function renderInto(ctx, canvas, s) {
+  const W = canvas.clientWidth, H = canvas.clientHeight;
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
@@ -161,7 +256,7 @@ function render(s) {
   const plotH = H - MARGIN.top - MARGIN.bottom;
 
   if (!s || !s.XBins || !s.YBins) {
-    drawFrame(plotW, plotH);
+    drawFrame(ctx, plotW, plotH);
     ctx.fillStyle = '#666';
     ctx.font = '12px ui-monospace, monospace';
     ctx.textAlign = 'center';
@@ -179,13 +274,12 @@ function render(s) {
   }
   if (maxCount === 0) maxCount = 1;
 
-  // Render to a small offscreen image then blit into the plot region.
   const img = ctx.createImageData(s.XBins, s.YBins);
   for (let x = 0; x < s.XBins; x++) {
     for (let y = 0; y < s.YBins; y++) {
       const t = s.Cells[x][y] / maxCount;
       const [r, g, b] = colorFor(t);
-      const yi = s.YBins - 1 - y; // flip: low y at bottom
+      const yi = s.YBins - 1 - y;
       const idx = (yi * s.XBins + x) * 4;
       img.data[idx]     = r;
       img.data[idx + 1] = g;
@@ -200,18 +294,18 @@ function render(s) {
   ctx.imageSmoothingEnabled = smoothEl.checked;
   ctx.drawImage(tmp, MARGIN.left, MARGIN.top, plotW, plotH);
 
-  drawFrame(plotW, plotH);
-  drawYAxis(s, plotH);
-  drawXAxis(s, plotW, plotH);
+  drawFrame(ctx, plotW, plotH);
+  drawYAxis(ctx, s, plotH);
+  drawXAxis(ctx, s, plotW, plotH);
 }
 
-function drawFrame(plotW, plotH) {
+function drawFrame(ctx, plotW, plotH) {
   ctx.strokeStyle = '#444';
   ctx.lineWidth = 1;
   ctx.strokeRect(MARGIN.left + 0.5, MARGIN.top + 0.5, plotW, plotH);
 }
 
-function drawYAxis(s, plotH) {
+function drawYAxis(ctx, s, plotH) {
   ctx.fillStyle = '#bbb';
   ctx.strokeStyle = '#444';
   ctx.font = '11px ui-monospace, monospace';
@@ -228,7 +322,6 @@ function drawYAxis(s, plotH) {
     ctx.textBaseline = 'middle';
     ctx.fillText(fmtNumber(v), MARGIN.left - 6, py);
   }
-  // axis title
   ctx.save();
   ctx.translate(16, MARGIN.top + plotH / 2);
   ctx.rotate(-Math.PI / 2);
@@ -238,7 +331,7 @@ function drawYAxis(s, plotH) {
   ctx.restore();
 }
 
-function drawXAxis(s, plotW, plotH) {
+function drawXAxis(ctx, s, plotW, plotH) {
   const yBase = MARGIN.top + plotH;
   if (!s.From || s.From === ZERO_TIME || !s.To || s.To === ZERO_TIME) return;
 
@@ -275,6 +368,7 @@ function drawXAxis(s, plotW, plotH) {
 
 refreshBtn.addEventListener('click', fetchAndRender);
 metricEl.addEventListener('change', fetchAndRender);
+groupByEl.addEventListener('change', fetchAndRender);
 ybinsEl.addEventListener('change', fetchAndRender);
 smoothEl.addEventListener('change', fetchAndRender);
 
@@ -284,6 +378,11 @@ function scheduleAuto() {
   if (autoEl.checked) autoTimer = setInterval(fetchAndRender, 1000);
 }
 autoEl.addEventListener('change', scheduleAuto);
+
+window.addEventListener('resize', () => {
+  resizeAllCanvases();
+  renderAll();
+});
 
 (async () => {
   await loadMetrics();

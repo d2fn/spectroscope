@@ -1,5 +1,7 @@
 package spectro
 
+import "fmt"
+
 // defaultRowCapacity caps observations stored per time bucket. Excess emits
 // to the same bucket are dropped (see table.emit). Memory cost per table is
 // numRows * defaultRowCapacity * 8 bytes.
@@ -9,17 +11,19 @@ type table struct {
 	dimensions map[string]string
 	alignment alignment
 	rows []row
+	allowRowExpansion bool
 }
 
-func newTable(dimensions map[string]string, alignment alignment, numRows int) *table {
+func newTable(dimensions map[string]string, alignment alignment, numRows int, rowCapacity int, allowRowExpansion bool) *table {
 	rows := make([]row, numRows)
 	for i := range rows {
-		rows[i].values = make([]float64, defaultRowCapacity)
+		rows[i].values = make([]float64, rowCapacity)
 	}
 	return &table {
 		dimensions: dimensions,
 		alignment: alignment,
 		rows: rows,
+		allowRowExpansion: allowRowExpansion,
 	}
 }
 
@@ -48,6 +52,12 @@ func (t *table) emit(ts int64, value float64) {
 	if row.writePtr == len(row.values) {
 		// either drop data silently or write over a random position in the value array
 		// drop for now
+		if t.allowRowExpansion {
+			row.values = append(row.values, value)
+			row.maxValue = max(row.maxValue, value)
+			row.minValue = min(row.minValue, value)
+			row.writePtr++
+		}
 	} else {
 		row.values[row.writePtr] = value
 		row.maxValue = max(row.maxValue, value)
@@ -59,10 +69,11 @@ func (t *table) emit(ts int64, value float64) {
 func (t *table) addAll(in *table) float64 {
 	var maxValue float64
 	if len(t.rows) != len(in.rows) {
+		fmt.Printf("unequal row lengths\n")
 		return maxValue
 	}
 	for i := range len(in.rows) {
-		row := in.rows[i]
+		row := &in.rows[i]
 		for _, value := range row.values[:row.writePtr] {
 			t.emit(row.block.start, value)
 		}
