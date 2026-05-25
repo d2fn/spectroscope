@@ -29,9 +29,9 @@ func main() {
 	defer cancel()
 
 	go ss.Start(ctx)
-	go emitWave(ss, "a", 150, 60, 3, 180*time.Second)
+	go emitWave(ss, "a", 100, 60, 15, 180*time.Second)
 	go emitWave(ss, "b", 10, 5, 1.5, 30*time.Second)
-	go emitNoise(ss, "noise", 0, 200)
+	go emitNoise(ss, "noise", 0, 250)
 	go emitRamp(ss, "ramp", 200.0/60.0, 200)
 
 	mux := http.NewServeMux()
@@ -55,7 +55,7 @@ func emitRamp(ss *spectro.SpectroServer, host string, slope, wrap float64) {
 			Dimensions: map[string]string{"host": host},
 			Measures:   map[string]float64{"latency_ms": v},
 		})
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -66,7 +66,7 @@ func emitNoise(ss *spectro.SpectroServer, host string, lo, hi float64) {
 			Dimensions: map[string]string{"host": host},
 			Measures:   map[string]float64{"latency_ms": lo + rand.Float64()*(hi-lo)},
 		})
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -81,6 +81,6 @@ func emitWave(ss *spectro.SpectroServer, host string, mean, amp, jitter float64,
 			Dimensions: map[string]string{"host": host},
 			Measures:   map[string]float64{"latency_ms": v},
 		})
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(15 * time.Millisecond)
 	}
 }

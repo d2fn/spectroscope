@@ -81,8 +81,9 @@ func (ss *SpectroServer) Query(query SpectrogramQuery) ([]SpectrogramGroup, erro
 
 	if query.GroupBy == "" {
 		tbl, tableMax, _ := ss.db.aggregate(query.Measure)
-		spec := buildSpectrogram(tbl, tableMax, yBins)
-		return []SpectrogramGroup{{Label: "all", Spectrogram: *spec}}, nil
+		g := buildGroup(tbl, tableMax, yBins)
+		g.Label = "all"
+		return []SpectrogramGroup{g}, nil
 	}
 
 	if _, ok := ss.dimensions.positions[query.GroupBy]; !ok {
@@ -98,16 +99,14 @@ func (ss *SpectroServer) Query(query SpectrogramQuery) ([]SpectrogramGroup, erro
 
 	out := make([]SpectrogramGroup, 0, len(labels))
 	for _, label := range labels {
-		spec := buildSpectrogram(tables[label], tableMax, yBins)
-		out = append(out, SpectrogramGroup{
-			Label:       query.GroupBy + "=" + label,
-			Spectrogram: *spec,
-		})
+		g := buildGroup(tables[label], tableMax, yBins)
+		g.Label = query.GroupBy + "=" + label
+		out = append(out, g)
 	}
 	return out, nil
 }
 
-func buildSpectrogram(tbl *table, tableMax float64, yBins int) *Spectrogram {
+func buildGroup(tbl *table, tableMax float64, yBins int) SpectrogramGroup {
 	bucketDur := time.Duration(tbl.alignment.blocksize) * time.Millisecond
 
 	populated := make([]*row, 0, len(tbl.rows))
@@ -127,11 +126,22 @@ func buildSpectrogram(tbl *table, tableMax float64, yBins int) *Spectrogram {
 		yMax = yMin + 1
 	}
 
+	totalValues := 0
+	for _, r := range populated {
+		totalValues += r.writePtr
+	}
+	allValues := make([]float64, 0, totalValues)
+
 	cells := make([][]int, xBins)
+	histCounts := make([]int, yBins)
 	for x, r := range populated {
 		cells[x] = make([]int, yBins)
 		for _, v := range r.values[:r.writePtr] {
-			if math.IsNaN(v) || v < yMin || v >= yMax {
+			if math.IsNaN(v) {
+				continue
+			}
+			allValues = append(allValues, v)
+			if v < yMin || v >= yMax {
 				continue
 			}
 			y := int((v - yMin) / (yMax - yMin) * float64(yBins))
@@ -139,6 +149,7 @@ func buildSpectrogram(tbl *table, tableMax float64, yBins int) *Spectrogram {
 				y--
 			}
 			cells[x][y]++
+			histCounts[y]++
 		}
 	}
 
@@ -148,16 +159,45 @@ func buildSpectrogram(tbl *table, tableMax float64, yBins int) *Spectrogram {
 		to = time.UnixMilli(populated[xBins-1].block.to())
 	}
 
-	return &Spectrogram{
-		From:      from,
-		To:        to,
-		BucketDur: bucketDur,
-		XBins:     xBins,
-		YBins:     yBins,
-		YMin:      yMin,
-		YMax:      yMax,
-		Cells:     cells,
+	sort.Float64s(allValues)
+
+	return SpectrogramGroup{
+		Spectrogram: Spectrogram{
+			From:      from,
+			To:        to,
+			BucketDur: bucketDur,
+			XBins:     xBins,
+			YBins:     yBins,
+			YMin:      yMin,
+			YMax:      yMax,
+			Cells:     cells,
+		},
+		Histogram: Histogram{
+			YBins:  yBins,
+			YMin:   yMin,
+			YMax:   yMax,
+			Counts: histCounts,
+		},
+		Percentiles: Percentiles{
+			P50: percentile(allValues, 0.50),
+			P75: percentile(allValues, 0.75),
+			P99: percentile(allValues, 0.99),
+		},
 	}
+}
+
+// percentile uses nearest-rank on a sorted slice: index = floor(p*n),
+// clamped to n-1. Returns 0 for an empty input.
+func percentile(sorted []float64, p float64) float64 {
+	n := len(sorted)
+	if n == 0 {
+		return 0
+	}
+	idx := int(p * float64(n))
+	if idx >= n {
+		idx = n - 1
+	}
+	return sorted[idx]
 }
 
 // a monotonic clock
@@ -191,6 +231,8 @@ type SpectrogramQuery struct {
 type SpectrogramGroup struct {
 	Label       string      `json:"label"`
 	Spectrogram Spectrogram `json:"spectrogram"`
+	Histogram   Histogram   `json:"histogram"`
+	Percentiles  Percentiles `json:"percentiles"`
 }
 
 type SpectrogramReply struct {
@@ -207,3 +249,20 @@ type Spectrogram struct {
 	YMin, YMax float64
 	Cells      [][]int
 }
+
+// Histogram is the per-y-bin count of observations aggregated across all
+// x-bins in the spectrogram. Counts[i] is the number of values that fell
+// in y-bin i; the bin's value range is [YMin+i*w, YMin+(i+1)*w) where
+// w = (YMax-YMin)/YBins.
+type Histogram struct {
+	YBins      int
+	YMin, YMax float64
+	Counts     []int
+}
+
+// Percentiles computed over every non-NaN value contributing to the
+// spectrogram, regardless of whether it fell inside [YMin, YMax).
+type Percentiles struct {
+	P50, P75, P99 float64
+}
+
