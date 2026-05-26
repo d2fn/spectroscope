@@ -1,7 +1,9 @@
 # Spectroscope
 
-An in-process metric recorder that exposes a spectrogram-style heatmap
-view over emitted observations. .
+An in-process metric recorder that exposes spectrogram-style heatmaps view over emitted
+observations. Results are streamed to your browser in hifi at 1 second resolution.
+
+![top](docs/screenshots/top.png)
 
 For each measure, Spectroscope produces:
 
