@@ -83,7 +83,11 @@ button:hover { background: #1a1a1a; }
   <input id="ybins" value="40" style="width: 56px" />
   <button id="refresh">refresh</button>
   <label class="label"><input type="checkbox" id="auto" checked> auto-refresh (1s)</label>
-  <label class="label"><input type="checkbox" id="smooth"> smooth</label>
+  <label class="label">smooth
+    <input type="range" id="smooth" min="0" max="10" step="1" value="0" style="vertical-align: middle; width: 90px" />
+    <span id="smoothValue" style="display: inline-block; width: 18px; text-align: right">0</span>
+  </label>
+  <label class="label"><input type="checkbox" id="percentiles"> percentiles</label>
   <span class="status" id="status"></span>
 </div>
 <div id="grid"></div>
@@ -96,6 +100,8 @@ const ybinsEl = document.getElementById('ybins');
 const refreshBtn = document.getElementById('refresh');
 const autoEl = document.getElementById('auto');
 const smoothEl = document.getElementById('smooth');
+const smoothValueEl = document.getElementById('smoothValue');
+const percentilesEl = document.getElementById('percentiles');
 const statusEl = document.getElementById('status');
 
 const cells = []; // [{label, canvas, ctx}]
@@ -130,6 +136,15 @@ function colorFor(t) {
 }
 
 const MARGIN = { left: 72, right: 16, top: 16, bottom: 56 };
+const HIST_WIDTH = 80;
+const HIST_GAP = 6;
+const HIST_COLOR = '#bbbbbb';
+const PCT_COLOR = 'rgba(220, 220, 220, 0.7)';
+const PCT_LINES = [
+  { key: 'P50', label: 'p50', dash: [] },
+  { key: 'P75', label: 'p75', dash: [4, 4] },
+  { key: 'P99', label: 'p99', dash: [1, 3] },
+];
 const ZERO_TIME = '0001-01-01T00:00:00Z';
 
 function fmtTime(d) {
@@ -243,16 +258,18 @@ async function fetchAndRender() {
 
 function renderAll() {
   for (let i = 0; i < cells.length; i++) {
-    renderInto(cells[i].ctx, cells[i].canvas, lastGroups[i].spectrogram);
+    renderInto(cells[i].ctx, cells[i].canvas, lastGroups[i]);
   }
 }
 
-function renderInto(ctx, canvas, s) {
+function renderInto(ctx, canvas, g) {
+  const s = g && g.spectrogram;
+  const h = g && g.histogram;
   const W = canvas.clientWidth, H = canvas.clientHeight;
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
-  const plotW = W - MARGIN.left - MARGIN.right;
+  const plotW = W - MARGIN.left - MARGIN.right - HIST_GAP - HIST_WIDTH;
   const plotH = H - MARGIN.top - MARGIN.bottom;
 
   if (!s || !s.XBins || !s.YBins) {
@@ -291,12 +308,112 @@ function renderInto(ctx, canvas, s) {
   tmp.width = s.XBins;
   tmp.height = s.YBins;
   tmp.getContext('2d').putImageData(img, 0, 0);
-  ctx.imageSmoothingEnabled = smoothEl.checked;
+  const smoothPx = parseFloat(smoothEl.value) || 0;
+  ctx.save();
+  ctx.imageSmoothingEnabled = smoothPx > 0;
+  if (smoothPx > 0) ctx.filter = `blur(${smoothPx}px)`;
   ctx.drawImage(tmp, MARGIN.left, MARGIN.top, plotW, plotH);
+  ctx.restore();
 
   drawFrame(ctx, plotW, plotH);
   drawYAxis(ctx, s, plotH);
   drawXAxis(ctx, s, plotW, plotH);
+  drawHistogram(ctx, h, plotW, plotH);
+  if (percentilesEl.checked) {
+    drawPercentiles(ctx, s, g.percentiles, plotW, plotH);
+  }
+}
+
+// drawHistogram paints a vertical bar chart in the strip between the
+// spectrogram and the right margin. The temp bitmap is exactly YBins
+// rows tall so it goes through the same vertical drawImage scaling
+// path as the spectrogram — guaranteeing each histogram bar lines up
+// pixel-for-pixel with its corresponding spectrogram y-row.
+function drawHistogram(ctx, h, plotW, plotH) {
+  const xLeft = MARGIN.left + plotW + HIST_GAP;
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(xLeft + 0.5, MARGIN.top + 0.5, HIST_WIDTH, plotH);
+
+  if (!h || !h.YBins || !h.Counts) return;
+
+  let maxCount = 0;
+  for (const c of h.Counts) if (c > maxCount) maxCount = c;
+  if (maxCount === 0) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const pxW = Math.max(1, Math.floor(HIST_WIDTH * dpr));
+  const tmp = document.createElement('canvas');
+  tmp.width = pxW;
+  tmp.height = h.YBins;
+  const tctx = tmp.getContext('2d');
+
+  // Row index in the bitmap is top-to-bottom; spectrogram y-bin i (low
+  // value at bottom) maps to row YBins-1-i. Same mapping as renderInto.
+  // All bars share a single muted color so long tails (low counts) still
+  // resolve to a visible 1-pixel bar instead of vanishing into black.
+  tctx.fillStyle = HIST_COLOR;
+  for (let i = 0; i < h.YBins; i++) {
+    if (h.Counts[i] === 0) continue;
+    const t = h.Counts[i] / maxCount;
+    const barPx = Math.max(1, Math.round(t * pxW));
+    tctx.fillRect(0, h.YBins - 1 - i, barPx, 1);
+  }
+
+  // Histogram bars stay crisp regardless of the smooth toggle (which
+  // applies only to the spectrogram pixels).
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(tmp, xLeft, MARGIN.top, HIST_WIDTH, plotH);
+
+  // Max-count label above the strip so you can read absolute counts.
+  ctx.fillStyle = '#888';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(`n=${maxCount}`, xLeft + HIST_WIDTH, MARGIN.top - 4);
+}
+
+// drawPercentiles draws horizontal markers spanning the spectrogram and
+// histogram strip at each percentile's y-value, with a small numeric
+// label at the right edge of the histogram. All lines share PCT_COLOR;
+// each percentile gets its own dash pattern so they're distinguishable
+// at a glance.
+function drawPercentiles(ctx, s, p, plotW, plotH) {
+  if (!p) return;
+  const range = s.YMax - s.YMin;
+  if (range <= 0) return;
+
+  const xLeft = MARGIN.left;
+  const xRight = MARGIN.left + plotW + HIST_GAP + HIST_WIDTH;
+
+  ctx.strokeStyle = PCT_COLOR;
+  ctx.lineWidth = 1;
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+
+  for (const line of PCT_LINES) {
+    const v = p[line.key];
+    if (v == null || v < s.YMin || v > s.YMax) continue;
+    const py = MARGIN.top + plotH - (v - s.YMin) / range * plotH;
+
+    ctx.setLineDash(line.dash);
+    ctx.beginPath();
+    ctx.moveTo(xLeft, py + 0.5);
+    ctx.lineTo(xRight, py + 0.5);
+    ctx.stroke();
+
+    // Label with a small dark backdrop so it stays readable when it
+    // overlaps a histogram bar.
+    ctx.setLineDash([]);
+    const labelText = `${line.label} ${fmtNumber(v)}`;
+    const tw = ctx.measureText(labelText).width;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(xRight - tw - 4, py - 7, tw + 4, 13);
+    ctx.fillStyle = PCT_COLOR;
+    ctx.fillText(labelText, xRight - 2, py);
+  }
+  ctx.setLineDash([]);
 }
 
 function drawFrame(ctx, plotW, plotH) {
@@ -370,7 +487,11 @@ refreshBtn.addEventListener('click', fetchAndRender);
 metricEl.addEventListener('change', fetchAndRender);
 groupByEl.addEventListener('change', fetchAndRender);
 ybinsEl.addEventListener('change', fetchAndRender);
-smoothEl.addEventListener('change', fetchAndRender);
+smoothEl.addEventListener('input', () => {
+  smoothValueEl.textContent = smoothEl.value;
+  renderAll();
+});
+percentilesEl.addEventListener('change', renderAll);
 
 let autoTimer = null;
 function scheduleAuto() {

@@ -1,0 +1,32 @@
+# Nix
+result
+result-*
+.direnv/
+
+# Go
+*.exe
+*.test
+*.out
+coverage.*
+/spectroserver
+
+# Java / Gradle / Maven
+build/
+target/
+.gradle/
+*.class
+*.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local
+.strm/

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-type SpectroServer struct {
+type SpectroscopeServer struct {
 	in chan Observation
 	clock *clock
 	dropped *atomic.Uint64
@@ -32,9 +32,9 @@ type Observation struct {
 
 // return a new spectrogram server with the given time precision (e.g. 1 * time.Second for 1s resolution)
 // and `history` number of those precision blocks
-func New(precision time.Duration, history int, dimensions []string, measures []string) *SpectroServer {
+func New(precision time.Duration, history int, dimensions []string, measures []string) *SpectroscopeServer {
 	dimensionFields := newFields(dimensions)
-	return &SpectroServer {
+	return &SpectroscopeServer {
 		clock: &clock {},
 		in: make(chan Observation, 10000),
 		dropped: &atomic.Uint64 {},
@@ -44,7 +44,7 @@ func New(precision time.Duration, history int, dimensions []string, measures []s
 	}
 }
 
-func (ss *SpectroServer) Start(ctx context.Context) {
+func (ss *SpectroscopeServer) Start(ctx context.Context) {
 	for {
 		select {
 		case obs := <-ss.in:
@@ -55,7 +55,7 @@ func (ss *SpectroServer) Start(ctx context.Context) {
 	}
 }
 
-func (ss *SpectroServer) Emit(obs Observation) error {
+func (ss *SpectroscopeServer) Emit(obs Observation) error {
 	_, err := ss.clock.emit(obs.Time)
 	if err != nil {
 		return err
@@ -70,7 +70,7 @@ func (ss *SpectroServer) Emit(obs Observation) error {
 	return nil
 }
 
-func (ss *SpectroServer) Query(query SpectrogramQuery) ([]SpectrogramGroup, error) {
+func (ss *SpectroscopeServer) Query(query SpectrogramQuery) ([]SpectrogramGroup, error) {
 	if query.Measure == "" {
 		return nil, fmt.Errorf("Measure is required")
 	}
