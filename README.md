@@ -92,6 +92,46 @@ Example:
 curl 'http://localhost:6060/spectrogram/latency_ms?yBins=40&groupBy=caller'
 ```
 
+## Web UI
+
+![overview](docs/screenshots/overview.png)
+
+The UI auto-discovers the configured metrics and dimensions on load and
+renders one tile per group. Each tile is composed of three
+pixel-aligned layers over the same y-scale:
+
+- **spectrogram** (left, fills available space): each column is one
+  time bucket, each row is one value bin, and color encodes the count
+  of observations that fell into that (time, value) cell. Reading
+  vertically tells you the value distribution at a moment in time;
+  reading horizontally tells you how a single value bin's activity
+  evolves.
+- **histogram** (right strip): the same y-bins aggregated across the
+  entire visible time window. It uses the identical row-to-y mapping
+  as the spectrogram, so a row at height `h` in one is the same value
+  range as the row at height `h` in the other — useful for spotting
+  long tails that are too faint to see in the heatmap.
+- **percentile markers** (optional, span both): horizontal lines for
+  p50 (solid), p75 (dashed), and p99 (dotted), computed exactly over
+  every contributing value (not bucketed), with the numeric value
+  labeled at the right edge.
+
+Controls along the top:
+
+- **metric** — which measure to display.
+- **group by** — dimension to split on. `none` shows a single aggregate
+  tile; otherwise the page splits into one tile per distinct value of
+  the chosen dimension, all sharing the same y-scale so magnitudes are
+  directly comparable.
+- **y-bins** — vertical resolution of the spectrogram and histogram.
+- **refresh** / **auto-refresh** — manual or polled (1s) updates.
+- **smooth** — slider from 0 to 10. At 0 the spectrogram renders as
+  crisp pixels; above 0, it's bilinear-interpolated and then Gaussian
+  blurred by the slider value in pixels. The histogram stays crisp at
+  any setting so long-tail counts remain readable.
+- **percentiles** — toggles the p50/p75/p99 markers described above.
+  Off by default.
+
 ## Demo binary
 
 `main.go` is a self-contained demo that constructs a SpectroscopeServer with
@@ -112,33 +152,6 @@ The six emitters are:
   `emitMultiWave` in `main.go`.
 - `noise` — uniform random over `[0, 250)`.
 
-## Web UI
-
-![overview](docs/screenshots/overview.png)
-
-The UI auto-discovers the configured metrics and dimensions on load.
-Controls along the top:
-
-- **metric** — which measure to display.
-- **group by** — dimension to split on. `none` shows a single aggregate.
-- **y-bins** — vertical resolution of the spectrogram and histogram.
-- **refresh** / **auto-refresh** — manual or polled (1s) updates.
-- **smooth** — slider from 0 to 10. At 0 the spectrogram renders as
-  crisp pixels; above 0, it's bilinear-interpolated and then Gaussian
-  blurred by the slider value in pixels. The histogram stays crisp at
-  any setting.
-- **percentiles** — toggles horizontal markers for p50 (solid), p75
-  (dashed), p99 (dotted) drawn across both the spectrogram and the
-  histogram, with the numeric value labeled at the right.
-
-Each cell renders:
-
-- a spectrogram (left, scaled to fill available space),
-- a vertically-oriented histogram (right strip, same color for all bars,
-  pixel-aligned so each y-bin in the histogram is the exact same row
-  range as in the spectrogram),
-- optional percentile markers spanning both.
-
 ### How "group by" tells the synthetic signals apart
 
 With `group by = none`, all six callers are folded into one spectrogram.
@@ -152,16 +165,6 @@ band somewhere in the middle.
 With `group by = caller`, the page splits into a grid — one
 spectrogram per caller, all sharing the same y-scale so the magnitudes
 are directly comparable. The character of each signal becomes obvious:
-
-- **`a`**: a thick low-frequency band wandering around 100 ms with
-  visible breathing in amplitude.
-- **`b`**: tighter band around 80 ms, faster tempo.
-- **`c`**: stately, high-mean (~150 ms), very slow drift.
-- **`d`**: three overlapping frequency bands stacked on each other.
-- **`e`**: clearly bursty — periods of silence near 40 ms followed by
-  loud excursions when the wide-amplitude layer comes back.
-- **`noise`**: a uniform vertical block from 0 to 250 — visibly *not*
-  signal.
 
 ## License
 
