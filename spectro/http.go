@@ -18,7 +18,7 @@ var uiHTML []byte
 //
 // GET /<metric> returns the current spectrogram for that metric as JSON.
 // Optional ?yBins=N query parameter overrides the default y-axis bin count.
-func (ss *SpectroServer) Handler() http.Handler {
+func (ss *SpectroscopeServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ui", ss.handleUI)
 	mux.HandleFunc("GET /_metrics", ss.handleMetrics)
@@ -26,12 +26,12 @@ func (ss *SpectroServer) Handler() http.Handler {
 	return mux
 }
 
-func (ss *SpectroServer) handleUI(w http.ResponseWriter, _ *http.Request) {
+func (ss *SpectroscopeServer) handleUI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(uiHTML)
 }
 
-func (ss *SpectroServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+func (ss *SpectroscopeServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(struct {
 		Metrics    []string `json:"metrics"`
@@ -42,7 +42,7 @@ func (ss *SpectroServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (ss *SpectroServer) handleSpectrogram(w http.ResponseWriter, r *http.Request) {
+func (ss *SpectroscopeServer) handleSpectrogram(w http.ResponseWriter, r *http.Request) {
 	metric := r.PathValue("metric")
 	yBins := 0
 	if s := r.URL.Query().Get("yBins"); s != "" {
